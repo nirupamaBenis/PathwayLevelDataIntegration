@@ -1,0 +1,10 @@
+Wild-type.untreated.rep1
+Wild-type.untreated.rep2
+Wild-type.untreated.rep3
+Wild-type.untreated.rep4
+Wild-type.untreated.rep5
+Wild-type.antibiotic.treated.rep1
+Wild-type.antibiotic.treated.rep2
+Wild-type.antibiotic.treated.rep3
+Wild-type.antibiotic.treated.rep4
+Wild-type.antibiotic.treated.rep5
