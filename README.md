@@ -1,2 +1,119 @@
 # PathwayLevelDataIntegration
-Scripts used in the paper 'High-level integration of murine intestinal transcriptomics data highlights the importance of the complement system in mucosal homeostasis'
+Scripts used in the paper 'High-level integration of murine intestinal transcriptomics data highlights the importance of the complement system in mucosal homeostasis'.
+
+The following shows the different script snippets that were used for the anaylysis detailed in the manuscript **High-level integration of murine intestinal transcriptomics data highlights the importance of the complement system in mucosal homeostasis**.
+Where possible example data is provided in the repository `PathwayLevelDataIntegration`. Given that the data used for this analysis is from public data repositories, we do not provide all the data for the pre-processing part of this markdown. The pathway analysis section is also only limited to one dataset to show the scripts
+
+The main sections of this Notebook are, preparing the data, preparing the database and preforming the analysis.
+
+# Download and pre-process the data
+The 14 datasets chosen to be analysed in this work are downloaded from Gene Expression Omnibus (GEO) with the package GEOquery using the acession numbers of the datasets. Given below is one example dataset which was used in our paper and was previously published in the paper *Epithelial-microbial crosstalk in polymeric Ig receptor deficient mice. Eur J Immunol 2012 Nov* (doi: 10.1002/eji.201242543).
+## Download data, meta-data and annotation from GEO
+The function *getGeo* retrieves data associated with a GEO accession number. 
+```{r}
+library(GEOquery)
+gseDirect <- getGEO("GSE34630", AnnotGPL = T)
+expressionSet <- gseDirect[[1]]
+expressionData <- data.frame(exprs(expressionSet))
+metaData <- data.frame(expressionSet@phenoData@data, stringsAsFactors = F) # This gives information on the experiment
+annotation <- expressionSet@featureData@data # This has information on genes and mapping to other databases
+conditionNames <- data.frame(title = sapply(metaData$title, as.character), sourceName = sapply(metaData$source_name_ch1, as.character), stringsAsFactors = F) # This has information on the samples that will be later used as column names
+```
+```{r}
+head(conditionNames)
+```
+Each dataset is processed indivdually for the samples that are to be used in the analysis.
+## Filter the data
+The data matrix is filtered for very low expressed genes. The expression value at 5% of the expression distribution is chosen as the threshold for filtering. Only genes that have an expression value higher than the threshold in 70% of the samples are retained in the dataset.
+An example data matrix with human homolog gene ids is provided in the Git repository, 
+```{r}
+expressionData <- read.delim(file = "expressionDataProperGSE34630.txt", as.is = T)
+conditionWithoutReplicates <- gsub("\\.rep[[:digit:]]$", "", colnames(expressionData)) # remove replicate information 
+conditionUnique <- unique(conditionWithoutReplicates) 
+minSamples <- min(table(conditionWithoutReplicates)) # The minimum number of samples per experimental condition
+mi <- apply(expressionData, 2, min) # Smallest expression value in the samples
+ma <-   apply(expressionData, 2, max) # Largest value in the samples 
+percV <- (5*(ma-mi)/100)+mi
+cutoff <- matrix(percV, nrow = nrow(expressionData), ncol = length(percV), byrow = TRUE)
+sampCutoff <- ceiling(0.7 * minSamples)
+```
+A spot is "expressed" if it is above the threshold in the microarrays specific to pools of any given condition 
+```{r}
+listExpressedGenes <- list()
+for(i in 1:length(conditionUnique)) {
+  sampleColumns <- grep(conditionUnique[i], colnames(expressionData))
+  expressedGenePos <- rowSums(expressionData[ ,sampleColumns] > cutoff[ ,sampleColumns]) >= sampCutoff
+  expressedGenes <- rownames(expressionData)[expressedGenePos]
+  listExpressedGenes[[i]] <- expressedGenes
+}
+allExpressedGenes <- unique(unlist(listExpressedGenes))
+filteredData <- expressionData[allExpressedGenes,]
+colnames(filteredData) <- colnames(expressionData)
+```
+## Convert the mice gene ids to human gene ids
+The gene ids are converted to human homologs with information from the NCBI database HomoloGene. This matrix is used in the rest of the analysis. In the absence of one to one mappings of the gene ids, the first match is chosen. The file used for conversion is in the repository folder Data, *refHumanMouse.txt*.
+```{r}
+humanMouseIds <- read.delim(file = "refHumanMouse.txt", as.is=T)
+checkedData <- filteredData
+checkedData <- checkedData[!is.na(rownames(checkedData)),]
+colnames(checkedData) <- colnames(filteredData)
+mappedHumanSymbols <- NULL
+for(i in 1:length(rownames(checkedData))){ 
+  mappedHumanSymbols[i] <- humanMouseIds$symbHuman[grep(rownames(checkedData)[i], humanMouseIds$entrezMouse)][1] # If there are multiple matches choose the first one
+}
+mappedIdsData <- data.frame(as.character(mappedHumanSymbols), checkedData, stringsAsFactors = F)
+library(limma)
+humanMappedData <- avereps(mappedIdsData, ID = mappedIdsData[, 1]) # Use the function from the package limma to average rows with the same human gene symbol
+rownames(humanMappedData) <- humanMappedData[, 1]
+humanMappedData <- humanMappedData[, -1]
+humanMappedData <- humanMappedData[nzchar(rownames(humanMappedData)), ]
+humanMappedData <- humanMappedData[!is.na(rownames(humanMappedData)), ]
+rowNames <- rownames(humanMappedData)
+humanMappedData <- apply(humanMappedData,2, function(x) as.numeric(x))
+rownames(humanMappedData) <- rowNames
+humanMappedData <- data.frame(humanMappedData)
+```
+The filtered and id converted data is now used for pathway analysis.
+## Process the pathway database
+The pathway database is downloaded in the BioPAX format from the website Reactome.org. The BioPAX file is loaded into R using the package RBiopaxParser.
+```{r}
+library(rBiopaxParser)
+biopax3 = readBiopax(file = "biopaxmodel.owl")
+```
+The biopax object in the R environment is then converted to a pathway.catalogue to be used for analysis in the CePa algorithm. The function import_biopax in the development version of the package CePa was modified to import a Biopax level 3 object. The file *homoSapiensLevel351.zip* has a compressed version of the BioPax object of Reactome version 51 of the human pathways.
+```{r}
+source("importBiopaxMod.r")
+pwCatalogReactome <- ImportBiopaxMod(biopax3)
+```
+## Pathway analysis
+The CePa algorithm is applied on all the pre-processed datasets with the prepared pathway.catalogue from Reactome. The following code is an example of the pathway analysis done on each dataset.
+The algorithm for univariate analysis was modified to allow for analysis on data with a small sample size and functions related to it are loaded before the analysis.
+```{r}
+sd <- "/home/user/allInfoDir/workspace/scripts/newCepaFunctions/"
+file.sources <- list.files(sd, pattern = ".r", full.names = T)
+sapply(file.sources, source, .GlobalEnv)
+source(paste0(sd, "cepa.all.functions.r"))
+source(paste0(sd, "cepaExtraFunctions.r"))
+source(paste0(sd, "cepa.univariate.all.mod.r"))
+source(paste0(sd, "cepa.univariate.mod.r"))
+source(paste0(sd, "cepa.all.r"))
+```
+The matrix comparison should contain the control and treatment samples to be differentially analysed. Details on the experimental design are given in the variable *sampLab*.
+```{r}
+comparision <- cbind(controlData, treatmentData)
+groups <- factor(as.integer(colnames(comparision) %in% colnames(treatmentData)))          
+groups <- as.numeric(levels(groups))[groups]
+groups <- gsub("0", "Control", groups)                   
+groups <- gsub("1", "Treatment", groups)
+names(groups) <- colnames(comparision)
+sampLab <- sampleLabel(unname(groups), treatment = "Treatment", control = "Control")
+```
+The function cepa.univariate.all.mod is used to apply the CePa algorithm on one comparison on all the pathways. 
+```{r}
+cepaResult = cepa.univariate.all.mod(mat = comparision, label = sampLab, cen = c("in.reach", "out.reach"), pc = pwCatalogFinal) 
+```
+We limited the result of the function to only the pathways with a p-value less than 0.01.
+```{r}
+cepaPathwayResult <- p.table(cepaResult, adj.method = "none", cutoff = 0.01)
+```
+The variable *cepaPathwayResult* now contains the ranked list of the results of the cepa analysis on one comparison of the data. We repeated these steps over all the experimental conditions studied in our paper.
